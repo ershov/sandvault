@@ -201,7 +201,36 @@ sync_dotfiles() {
         echo "umask 002" | sudo tee "$sandbox_bashrc" >/dev/null
     fi
 }
-build_ssh()     { info "SSH setup (not yet implemented)"; }
+build_ssh() {
+    local host_home
+    host_home="$(getent passwd "$HOST_USER" | cut -d: -f6)"
+    local ssh_dir="${SANDBOX_HOME}/.ssh"
+    local auth_keys="${ssh_dir}/authorized_keys"
+
+    info "Setting up SSH access"
+
+    sudo mkdir -p "$ssh_dir"
+    sudo chmod 700 "$ssh_dir"
+
+    # Collect all public keys from host
+    local pub_keys=()
+    for f in "${host_home}"/.ssh/*.pub; do
+        [[ -f "$f" ]] || continue
+        pub_keys+=("$f")
+    done
+
+    if [[ ${#pub_keys[@]} -eq 0 ]]; then
+        warn "No SSH public keys found in ${host_home}/.ssh/*.pub — skipping SSH setup"
+        return
+    fi
+
+    # Concatenate all public keys into authorized_keys
+    sudo bash -c "cat $(printf '%q ' "${pub_keys[@]}") > ${auth_keys}"
+    sudo chmod 600 "$auth_keys"
+    sudo chown -R "${SANDBOX_USER}:${SANDBOX_USER}" "$ssh_dir"
+
+    info "Installed ${#pub_keys[@]} public key(s) into $auth_keys"
+}
 
 cmd_build() {
     [[ "$(id -u)" -ne 0 ]] || die "Do not run as root. Run as your normal user (sudo is used internally)."
