@@ -1,0 +1,568 @@
+#!/bin/bash
+# macOS sandbox user management tool
+set -Eeuo pipefail
+trap 'echo >&2 "${BASH_SOURCE[0]}: line $LINENO: $BASH_COMMAND: exit $?"' ERR
+
+readonly SVM_VERSION="0.1.0"
+
+# Resolve the invoking (host) user — works even under sudo
+HOST_USER="${SUDO_USER:-$USER}"
+[[ -n "$HOST_USER" ]] || { echo >&2 "[svm] ERROR: Cannot determine host user (USER and SUDO_USER are both unset)"; exit 1; }
+readonly HOST_USER
+readonly SANDBOX_USER="sandvault-${HOST_USER}"
+readonly SANDBOX_GROUP="$SANDBOX_USER"
+readonly SANDBOX_HOME="/Users/${SANDBOX_USER}"
+readonly SUDOERS_FILE="/etc/sudoers.d/50-${SANDBOX_USER}"
+readonly SANDBOX_PROFILE="/var/sandvault/sandbox-${SANDBOX_USER}.sb"
+HOST_SHELL="$(dscl . -read "/Users/$HOST_USER" UserShell 2>/dev/null | awk '{print $2}')"
+readonly HOST_SHELL
+
+info()  { echo >&2 "[svm] $*"; }
+warn()  { echo >&2 "[svm] WARNING: $*"; }
+die()   { echo >&2 "[svm] ERROR: $*"; exit 1; }
+
+sandbox_user_exists()  { dscl . -read "/Users/$SANDBOX_USER" &>/dev/null 2>&1; }
+sandbox_group_exists() { dscl . -read "/Groups/$SANDBOX_GROUP" &>/dev/null 2>&1; }
+require_sandbox() { sandbox_user_exists || die "Sandbox user '$SANDBOX_USER' does not exist. Run 'svm install' first."; }
+
+show_help() {
+    cat <<EOF
+Usage: svm <command> [args...]
+
+Commands:
+  install     Create sandbox user, group, sudoers, sandbox profile, home skeleton, SSH keys
+  shell       Open sandboxed login shell as sandbox user (extra args forwarded to sudo)
+  ssh         SSH into sandbox user on localhost (extra args forwarded to ssh)
+  run         Run a sandboxed command as the sandbox user: svm run <cmd> [args...]
+  stop        Kill all sandbox user processes
+  uninstall   Full teardown (user, home, group, sudoers, sandbox profile)
+  status      Show sandbox user status, processes, disk usage
+  sync        Re-copy dotfiles/credentials from host to sandbox home
+  help        Show this help
+  version     Show version
+
+Sandbox user:    $SANDBOX_USER
+Sandbox home:    $SANDBOX_HOME
+Sandbox profile: $SANDBOX_PROFILE
+EOF
+}
+
+show_version() {
+    echo "svm $SVM_VERSION"
+}
+
+main() {
+    [[ $# -ge 1 ]] || { show_help; exit 1; }
+
+    local cmd="$1"
+    shift
+
+    case "$cmd" in
+        install)    cmd_install "$@" ;;
+        shell)      cmd_shell "$@" ;;
+        ssh)        cmd_ssh "$@" ;;
+        run)        cmd_run "$@" ;;
+        stop)       cmd_stop "$@" ;;
+        uninstall)  cmd_uninstall "$@" ;;
+        status)     cmd_status "$@" ;;
+        sync)       cmd_sync "$@" ;;
+        help|-h|--help) show_help ;;
+        version|--version) show_version ;;
+        *)          die "Unknown command: $cmd. Run 'svm help' for usage." ;;
+    esac
+}
+
+###############################################################################
+# Build helpers
+###############################################################################
+
+build_sudoers() {
+    if [[ -f "$SUDOERS_FILE" ]]; then
+        info "Sudoers rule already exists at $SUDOERS_FILE"
+        return
+    fi
+
+    info "Installing sudoers rule at $SUDOERS_FILE"
+    local rule="${HOST_USER} ALL=(${SANDBOX_USER}) NOPASSWD: ALL"
+
+    local tmp
+    tmp="$(mktemp)"
+    echo "$rule" > "$tmp"
+    if sudo visudo -c -f "$tmp" >/dev/null 2>&1; then
+        sudo cp "$tmp" "$SUDOERS_FILE"
+        sudo chmod 0440 "$SUDOERS_FILE"
+        rm -f "$tmp"
+    else
+        rm -f "$tmp"
+        die "Sudoers rule failed validation. Aborting."
+    fi
+}
+
+build_sandbox_profile() {
+    if [[ -f "$SANDBOX_PROFILE" ]]; then
+        info "Sandbox profile already exists at $SANDBOX_PROFILE"
+        return
+    fi
+
+    info "Creating sandbox profile at $SANDBOX_PROFILE"
+    sudo mkdir -p /var/sandvault
+
+    cat <<EOF | sudo tee "$SANDBOX_PROFILE" > /dev/null
+;; Sandbox profile for $SANDBOX_USER
+(version 1)
+(allow default)
+
+;; Deny all file writes by default
+(deny file-write*
+    (subpath "/"))
+
+;; Deny reads to /Volumes to prevent access to removable drives
+(deny file-read*
+    (subpath "/Volumes"))
+(allow file-read*
+    (subpath "/Volumes/Macintosh HD"))
+
+;; Allow writes to sandbox home, temp directories, and devices
+(allow file-write*
+    (subpath "$SANDBOX_HOME")
+    (subpath "/tmp")
+    (subpath "/private/tmp")
+    (subpath "/var/folders")
+    (subpath "/private/var/folders")
+    (subpath "/dev"))
+
+;; Allow process introspection and execution
+(allow process-info*)
+(allow sysctl-read)
+(allow process*)
+
+;; Allow /bin/ps to run without sandbox restrictions
+(allow process-exec
+    (literal "/bin/ps")
+    (with no-sandbox))
+EOF
+
+    sudo chmod 0444 "$SANDBOX_PROFILE"
+    info "Sandbox profile installed"
+}
+
+# Files and directories to copy from host home to sandbox home.
+# Each entry is relative to $HOME. Directories must end with /.
+# Only entries that exist on the host are copied.
+readonly SYNC_DOTFILES=(
+    # Shell
+    .bashrc
+    .bash_profile
+    .profile
+    .zshrc
+    .zshenv
+    .zprofile
+    .zlogin
+    .inputrc
+    .screenrc
+    .hushlogin
+
+    # Editor / TUI
+    .vimrc
+    .nanorc
+    .tmux.conf
+    .tmux.tcl
+    .config/nvim/
+    .config/htop/
+    .config/kitty/
+    .config/alacritty/
+    .config/wezterm/
+    .config/nnn/
+    .config/vifm/
+    .config/sc-im/
+    .config/lazygit/
+    .config/lazy-github/
+    .config/gitui/
+    .config/starship.toml
+
+    # Dev tools
+    .gitconfig
+    .gitignore
+    .bazelrc
+    .editorconfig
+    .config/git/
+    .config/gh/
+    .config/uv/
+    .config/opencode/
+    .config/pip/
+    .npmrc
+    .gemrc
+    .curlrc
+    .wgetrc
+    .ripgreprc
+    .fdignore
+    .prettierrc
+    .eslintrc.json
+
+    # Agent credentials
+    .claude/.credentials.json
+    .claude/settings.json
+    .claude/plugins/
+    .codex/auth.json
+    .codex/config.toml
+
+    # Binaries / runtimes
+    .local/bin/
+    .bun/
+    .cargo/
+    bin/
+)
+
+sync_dotfiles() {
+    local host_home
+    host_home="$(dscl . -read "/Users/$HOST_USER" NFSHomeDirectory | awk '{print $2}')"
+    info "Syncing dotfiles from $host_home to $SANDBOX_HOME"
+
+    for entry in "${SYNC_DOTFILES[@]}"; do
+        local src="${host_home}/${entry}"
+        local dest="${SANDBOX_HOME}/${entry}"
+
+        # Skip if source doesn't exist
+        [[ -e "$src" ]] || continue
+
+        # Ensure parent directory exists
+        local dest_dir
+        dest_dir="$(dirname "$dest")"
+        sudo mkdir -p "$dest_dir"
+
+        if [[ -d "$src" ]]; then
+            [[ "$src" == */ ]] || src="${src}/"
+            [[ "$dest" == */ ]] || dest="${dest}/"
+            sudo rsync -a --quiet "$src" "$dest"
+        else
+            sudo cp -a "$src" "$dest"
+        fi
+        info "  Copied: $entry"
+    done
+
+    # Inject sandbox-specific settings into shell rc files if not already present
+    local marker="# svm-sandbox-settings"
+    local settings
+    settings="$(cat <<'SETTINGS'
+
+# svm-sandbox-settings
+umask 002
+alias claude="command claude --dangerously-skip-permissions"
+alias codex="command codex --dangerously-bypass-approvals-and-sandbox"
+alias gemini="command gemini --yolo"
+SETTINGS
+)"
+
+    # Inject into .zshrc (macOS default shell)
+    local sandbox_zshrc="${SANDBOX_HOME}/.zshrc"
+    if ! sudo grep -q "$marker" "$sandbox_zshrc" 2>/dev/null; then
+        info "Injecting sandbox settings into .zshrc"
+        echo "$settings" | sudo tee -a "$sandbox_zshrc" > /dev/null
+    fi
+
+    # Inject into .bashrc too if it exists
+    local sandbox_bashrc="${SANDBOX_HOME}/.bashrc"
+    if [[ -f "$sandbox_bashrc" ]] && ! sudo grep -q "$marker" "$sandbox_bashrc" 2>/dev/null; then
+        info "Injecting sandbox settings into .bashrc"
+        echo "$settings" | sudo tee -a "$sandbox_bashrc" > /dev/null
+    fi
+}
+
+build_ssh() {
+    local ssh_dir="${SANDBOX_HOME}/.ssh"
+    local auth_keys="${ssh_dir}/authorized_keys"
+
+    info "Setting up SSH access"
+
+    sudo mkdir -p "$ssh_dir"
+    sudo chmod 700 "$ssh_dir"
+
+    # Collect all public keys from host
+    local host_home
+    host_home="$(dscl . -read "/Users/$HOST_USER" NFSHomeDirectory | awk '{print $2}')"
+    local pub_keys=()
+    for f in "${host_home}"/.ssh/*.pub; do
+        [[ -f "$f" ]] || continue
+        pub_keys+=("$f")
+    done
+
+    if [[ ${#pub_keys[@]} -eq 0 ]]; then
+        warn "No SSH public keys found in ${host_home}/.ssh/*.pub — skipping SSH setup"
+        return
+    fi
+
+    sudo cat "${pub_keys[@]}" | sudo tee "$auth_keys" > /dev/null
+    sudo chmod 600 "$auth_keys"
+    sudo chown -R "${SANDBOX_USER}:${SANDBOX_GROUP}" "$ssh_dir"
+
+    # Ensure sandbox user is in SSH access group
+    if dseditgroup -o checkmember -m "$SANDBOX_USER" com.apple.access_ssh &>/dev/null; then
+        info "User '$SANDBOX_USER' already in SSH access group"
+    else
+        info "Adding '$SANDBOX_USER' to SSH access group"
+        sudo dseditgroup -o edit -a "$SANDBOX_USER" -t user com.apple.access_ssh
+    fi
+
+    info "Installed ${#pub_keys[@]} public key(s) into $auth_keys"
+}
+
+###############################################################################
+# Commands
+###############################################################################
+
+cmd_install() {
+    [[ "$(id -u)" -ne 0 ]] || die "Do not run as root. Run as your normal user (sudo is used internally)."
+
+    info "Building sandbox: $SANDBOX_USER"
+
+    # Create group
+    if sandbox_group_exists; then
+        info "Group '$SANDBOX_GROUP' already exists"
+    else
+        info "Creating group '$SANDBOX_GROUP'"
+        # Find next available GID
+        local next_id
+        next_id=$(dscl . -list /Users UniqueID | awk '{print $2}' | sort -n | tail -1)
+        next_id=$((next_id + 1))
+
+        sudo dscl . -create "/Groups/$SANDBOX_GROUP"
+        sudo dscl . -create "/Groups/$SANDBOX_GROUP" PrimaryGroupID "$next_id"
+        sudo dscl . -create "/Groups/$SANDBOX_GROUP" RealName "$SANDBOX_GROUP Group"
+    fi
+
+    local group_id
+    group_id="$(dscl . -read "/Groups/$SANDBOX_GROUP" PrimaryGroupID 2>/dev/null | awk '{print $2}')"
+
+    # Create user
+    if sandbox_user_exists; then
+        info "User '$SANDBOX_USER' already exists"
+    else
+        info "Creating user '$SANDBOX_USER'"
+        # Find next available UID
+        local next_id
+        next_id=$(dscl . -list /Users UniqueID | awk '{print $2}' | sort -n | tail -1)
+        next_id=$((next_id + 1))
+
+        sudo dscl . -create "/Users/$SANDBOX_USER"
+        sudo dscl . -create "/Users/$SANDBOX_USER" UniqueID "$next_id"
+        sudo dscl . -create "/Users/$SANDBOX_USER" PrimaryGroupID "$group_id"
+        sudo dscl . -create "/Users/$SANDBOX_USER" RealName "$SANDBOX_USER User"
+        sudo dscl . -create "/Users/$SANDBOX_USER" NFSHomeDirectory "$SANDBOX_HOME"
+        sudo dscl . -create "/Users/$SANDBOX_USER" UserShell "$HOST_SHELL"
+
+        # Set random password (required by macOS, but we use key-based SSH)
+        local random_pass
+        random_pass="$(openssl rand -base64 32)"
+        sudo dscl . -passwd "/Users/$SANDBOX_USER" "$random_pass"
+
+        # Hide from login screen
+        sudo dscl . -create "/Users/$SANDBOX_USER" IsHidden 1
+    fi
+
+    # Remove sandbox user from "staff" group to restrict access to
+    # /usr/local, /opt/homebrew, and other staff-writable paths
+    info "Removing '$SANDBOX_USER' from staff group"
+    local gen_uid
+    gen_uid="$(dscl . -read "/Users/$SANDBOX_USER" GeneratedUID 2>/dev/null | awk '{print $2}' || true)"
+    sudo dseditgroup -o edit -d "$SANDBOX_USER" -t user staff 2>/dev/null || true
+    if [[ -n "$gen_uid" ]]; then
+        sudo dscl . -delete /Groups/staff GroupMembers "$gen_uid" 2>/dev/null || true
+    fi
+    sudo dscl . -delete /Groups/staff GroupMembership "$SANDBOX_USER" 2>/dev/null || true
+
+    # Add host user to sandbox group (for file access)
+    if dseditgroup -o checkmember -m "$HOST_USER" "$SANDBOX_GROUP" &>/dev/null; then
+        info "Host user '$HOST_USER' already in group '$SANDBOX_GROUP'"
+    else
+        info "Adding '$HOST_USER' to group '$SANDBOX_GROUP'"
+        sudo dseditgroup -o edit -a "$HOST_USER" -t user "$SANDBOX_GROUP"
+    fi
+
+    # Create and set home directory permissions
+    sudo mkdir -p "$SANDBOX_HOME"
+    info "Setting permissions on $SANDBOX_HOME"
+    sudo chmod 0750 "$SANDBOX_HOME"
+
+    # Install sudoers rule
+    build_sudoers
+
+    # Create sandbox-exec profile
+    build_sandbox_profile
+
+    # Copy dotfiles and tools
+    sync_dotfiles
+
+    # Set up SSH access
+    build_ssh
+
+    # Fix ownership
+    info "Fixing ownership"
+    sudo chown -R "${SANDBOX_USER}:${SANDBOX_GROUP}" "$SANDBOX_HOME"
+
+    # Make subdirs group-writable + setgid (except .ssh)
+    sudo find "$SANDBOX_HOME" -mindepth 1 -type d ! -path '*/.ssh' ! -path '*/.ssh/*' \
+        -exec chmod 2770 {} +
+
+    info "Install complete. Sandbox user: $SANDBOX_USER"
+    info "NOTE: You may need to log out and back in for group membership to take effect."
+}
+
+cmd_shell() {
+    require_sandbox
+    exec sudo --login --set-home --user="$SANDBOX_USER" \
+        /usr/bin/env -i \
+            "HOME=$SANDBOX_HOME" \
+            "USER=$SANDBOX_USER" \
+            "SHELL=$HOST_SHELL" \
+            "TERM=${TERM:-}" \
+            "PATH=/usr/bin:/bin:/usr/sbin:/sbin" \
+        /usr/bin/sandbox-exec -f "$SANDBOX_PROFILE" \
+        "$HOST_SHELL" --login "$@"
+}
+
+cmd_ssh() {
+    require_sandbox
+    exec ssh "$SANDBOX_USER@localhost" "$@"
+}
+
+cmd_run() {
+    [[ $# -ge 1 ]] || die "Usage: svm run <command> [args...]"
+    require_sandbox
+    local run_cmd="$1"
+    shift
+    exec sudo --login --set-home --user="$SANDBOX_USER" \
+        /usr/bin/env -i \
+            "HOME=$SANDBOX_HOME" \
+            "USER=$SANDBOX_USER" \
+            "SHELL=$HOST_SHELL" \
+            "TERM=${TERM:-}" \
+            "PATH=/usr/bin:/bin:/usr/sbin:/sbin" \
+        /usr/bin/sandbox-exec -f "$SANDBOX_PROFILE" \
+        "$run_cmd" "$@"
+}
+
+cmd_stop() {
+    require_sandbox
+    local uid
+    uid="$(dscl . -read "/Users/$SANDBOX_USER" UniqueID | awk '{print $2}')"
+
+    info "Stopping all processes for $SANDBOX_USER (uid $uid)"
+
+    # Use launchctl to terminate the user session (kills all processes)
+    if sudo launchctl bootout "user/$uid" 2>/dev/null; then
+        info "Terminated user session via launchctl"
+    fi
+
+    # SIGKILL any stragglers
+    if sudo pkill -9 -u "$SANDBOX_USER" 2>/dev/null; then
+        info "Sent SIGKILL to remaining processes"
+    else
+        info "No processes running"
+    fi
+}
+
+cmd_uninstall() {
+    require_sandbox
+
+    echo "This will permanently remove:"
+    echo "  - User: $SANDBOX_USER"
+    echo "  - Home: $SANDBOX_HOME"
+    echo "  - Group: $SANDBOX_GROUP"
+    echo "  - Sudoers: $SUDOERS_FILE"
+    echo "  - Sandbox profile: $SANDBOX_PROFILE"
+    echo ""
+    read -r -p "Are you sure? [y/N] " confirm
+    [[ "$confirm" =~ ^[Yy]$ ]] || { info "Aborted."; return; }
+
+    info "Stopping processes..."
+    cmd_stop
+
+    info "Removing sudoers rule"
+    sudo rm -f "$SUDOERS_FILE"
+
+    info "Removing sandbox profile"
+    sudo rm -f "$SANDBOX_PROFILE"
+
+    info "Removing user"
+    sudo dscl . -delete "/Users/$SANDBOX_USER" 2>/dev/null || warn "Failed to delete user (may already be removed)"
+
+    info "Removing home directory"
+    sudo rm -rf "$SANDBOX_HOME"
+
+    info "Removing group"
+    sudo dscl . -delete "/Groups/$SANDBOX_GROUP" 2>/dev/null || warn "Failed to delete group (may already be removed)"
+
+    # Remove host user from sandbox group (may already be gone)
+    sudo dseditgroup -o edit -d "$HOST_USER" -t user "$SANDBOX_GROUP" 2>/dev/null || true
+
+    # Remove sandbox user from SSH access group
+    sudo dseditgroup -o edit -d "$SANDBOX_USER" -t user com.apple.access_ssh 2>/dev/null || true
+
+    info "Uninstall complete"
+}
+
+cmd_status() {
+    echo "Sandbox user:    $SANDBOX_USER"
+    echo "Sandbox home:    $SANDBOX_HOME"
+    echo "Sandbox profile: $SANDBOX_PROFILE"
+
+    # Check if user exists
+    if sandbox_user_exists; then
+        echo "User exists:     yes"
+        echo "User shell:      $(dscl . -read "/Users/$SANDBOX_USER" UserShell 2>/dev/null | awk '{print $2}')"
+        echo "User uid:        $(dscl . -read "/Users/$SANDBOX_USER" UniqueID 2>/dev/null | awk '{print $2}')"
+        echo "User hidden:     $(dscl . -read "/Users/$SANDBOX_USER" IsHidden 2>/dev/null | awk '{print $2}')"
+    else
+        echo "User exists:     no"
+        return
+    fi
+
+    # Check running processes
+    local procs
+    procs="$(pgrep -u "$SANDBOX_USER" -c 2>/dev/null || true)"
+    echo "Processes:       ${procs:-0}"
+
+    # Check home directory
+    if [[ -d "$SANDBOX_HOME" ]]; then
+        local usage
+        usage="$(sudo -u "$SANDBOX_USER" du -sh "$SANDBOX_HOME" 2>/dev/null | cut -f1)"
+        echo "Home disk:       ${usage:-unknown}"
+    else
+        echo "Home disk:       (directory does not exist)"
+    fi
+
+    # Check sudoers
+    if [[ -f "$SUDOERS_FILE" ]]; then
+        echo "Sudoers rule:    $SUDOERS_FILE"
+    else
+        echo "Sudoers rule:    not installed"
+    fi
+
+    # Check sandbox profile
+    if [[ -f "$SANDBOX_PROFILE" ]]; then
+        echo "Sandbox profile: installed"
+    else
+        echo "Sandbox profile: not installed"
+    fi
+
+    # Check SSH
+    local nkeys
+    nkeys="$(sudo -u "$SANDBOX_USER" wc -l < <(sudo -u "$SANDBOX_USER" cat "${SANDBOX_HOME}/.ssh/authorized_keys" 2>/dev/null) 2>/dev/null || true)"
+    if [[ -n "$nkeys" && "$nkeys" -gt 0 ]] 2>/dev/null; then
+        echo "SSH keys:        $nkeys"
+    else
+        echo "SSH keys:        none"
+    fi
+}
+
+cmd_sync() {
+    require_sandbox
+    info "Syncing dotfiles and credentials to $SANDBOX_HOME"
+    sync_dotfiles
+    build_ssh
+    info "Fixing ownership"
+    sudo chown -R "${SANDBOX_USER}:${SANDBOX_GROUP}" "$SANDBOX_HOME"
+    info "Sync complete"
+}
+
+main "$@"
