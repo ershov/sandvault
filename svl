@@ -7,6 +7,7 @@ readonly SVL_VERSION="0.1.0"
 
 # Resolve the invoking (host) user — works even under sudo
 HOST_USER="${SUDO_USER:-$USER}"
+[[ -n "$HOST_USER" ]] || { echo >&2 "[svl] ERROR: Cannot determine host user (USER and SUDO_USER are both unset)"; exit 1; }
 readonly HOST_USER
 readonly SANDBOX_USER="sandvault-${HOST_USER}"
 readonly SANDBOX_HOME="/home/${SANDBOX_USER}"
@@ -68,7 +69,7 @@ main() {
     esac
 }
 
-# Stub functions — implemented in subsequent tasks
+# Build helpers
 build_sudoers() {
     if [[ -f "$SUDOERS_FILE" ]]; then
         info "Sudoers rule already exists at $SUDOERS_FILE"
@@ -95,7 +96,7 @@ build_sudoers() {
 # Files and directories to copy from host home to sandbox home.
 # Each entry is relative to $HOME. Directories must end with /.
 # Only entries that exist on the host are copied.
-SYNC_DOTFILES=(
+readonly SYNC_DOTFILES=(
     # Shell
     .bashrc
     .bash_profile
@@ -225,7 +226,7 @@ build_ssh() {
     fi
 
     # Concatenate all public keys into authorized_keys
-    sudo bash -c "cat $(printf '%q ' "${pub_keys[@]}") > ${auth_keys}"
+    sudo cat "${pub_keys[@]}" | sudo tee "$auth_keys" > /dev/null
     sudo chmod 600 "$auth_keys"
     sudo chown -R "${SANDBOX_USER}:${SANDBOX_USER}" "$ssh_dir"
 
