@@ -303,7 +303,25 @@ cmd_run() {
     require_sandbox
     exec sudo -u "$SANDBOX_USER" -- "$@"
 }
-cmd_stop()      { die "Not yet implemented"; }
+cmd_stop() {
+    require_sandbox
+    local uid
+    uid="$(id -u "$SANDBOX_USER")"
+
+    info "Stopping all processes for $SANDBOX_USER (uid $uid)"
+
+    # SIGTERM first
+    if sudo pkill -u "$SANDBOX_USER" 2>/dev/null; then
+        info "Sent SIGTERM, waiting 3 seconds..."
+        sleep 3
+        # SIGKILL stragglers
+        if sudo pkill -9 -u "$SANDBOX_USER" 2>/dev/null; then
+            info "Sent SIGKILL to remaining processes"
+        fi
+    else
+        info "No processes running"
+    fi
+}
 cmd_uninstall() { die "Not yet implemented"; }
 cmd_status()    { die "Not yet implemented"; }
 cmd_sync()      { die "Not yet implemented"; }
