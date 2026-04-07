@@ -391,7 +391,7 @@ cmd_status() {
     # Check home directory
     if [[ -d "$SANDBOX_HOME" ]]; then
         local usage
-        usage="$(du -sh "$SANDBOX_HOME" 2>/dev/null | cut -f1)"
+        usage="$(sudo -u "$SANDBOX_USER" du -sh "$SANDBOX_HOME" 2>/dev/null | cut -f1)"
         echo "Home disk:     ${usage:-unknown}"
     else
         echo "Home disk:     (directory does not exist)"
