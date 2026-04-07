@@ -1,0 +1,79 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+readonly SVL_VERSION="0.1.0"
+
+# Resolve the invoking (host) user — works even under sudo
+HOST_USER="${SUDO_USER:-$USER}"
+readonly HOST_USER
+readonly SANDBOX_USER="sandvault-${HOST_USER}"
+readonly SANDBOX_HOME="/home/${SANDBOX_USER}"
+readonly SUDOERS_FILE="/etc/sudoers.d/50-${SANDBOX_USER}"
+HOST_SHELL="$(getent passwd "$HOST_USER" | cut -d: -f7)"
+readonly HOST_SHELL
+
+info()  { echo >&2 "[svl] $*"; }
+warn()  { echo >&2 "[svl] WARNING: $*"; }
+die()   { echo >&2 "[svl] ERROR: $*"; exit 1; }
+
+sandbox_user_exists()  { getent passwd "$SANDBOX_USER" >/dev/null 2>&1; }
+sandbox_group_exists() { getent group  "$SANDBOX_USER" >/dev/null 2>&1; }
+require_sandbox() { sandbox_user_exists || die "Sandbox user '$SANDBOX_USER' does not exist. Run 'svl build' first."; }
+
+show_help() {
+    cat <<EOF
+Usage: svl <command> [args...]
+
+Commands:
+  build       Create sandbox user, group, sudoers, home skeleton, SSH keys
+  shell       Open login shell as sandbox user (extra args forwarded to sudo)
+  ssh         SSH into sandbox user on localhost (extra args forwarded to ssh)
+  run         Run a command as the sandbox user: svl run <cmd> [args...]
+  stop        Kill all sandbox user processes
+  uninstall   Full teardown (user, home, group, sudoers)
+  status      Show sandbox user status, processes, disk usage
+  sync        Re-copy dotfiles/credentials from host to sandbox home
+  help        Show this help
+  version     Show version
+
+Sandbox user: $SANDBOX_USER
+Sandbox home: $SANDBOX_HOME
+EOF
+}
+
+show_version() {
+    echo "svl $SVL_VERSION"
+}
+
+main() {
+    [[ $# -ge 1 ]] || { show_help; exit 1; }
+
+    local cmd="$1"
+    shift
+
+    case "$cmd" in
+        build)      cmd_build "$@" ;;
+        shell)      cmd_shell "$@" ;;
+        ssh)        cmd_ssh "$@" ;;
+        run)        cmd_run "$@" ;;
+        stop)       cmd_stop "$@" ;;
+        uninstall)  cmd_uninstall "$@" ;;
+        status)     cmd_status "$@" ;;
+        sync)       cmd_sync "$@" ;;
+        help|-h|--help) show_help ;;
+        version|--version) show_version ;;
+        *)          die "Unknown command: $cmd. Run 'svl help' for usage." ;;
+    esac
+}
+
+# Stub functions — implemented in subsequent tasks
+cmd_build()     { die "Not yet implemented"; }
+cmd_shell()     { die "Not yet implemented"; }
+cmd_ssh()       { die "Not yet implemented"; }
+cmd_run()       { die "Not yet implemented"; }
+cmd_stop()      { die "Not yet implemented"; }
+cmd_uninstall() { die "Not yet implemented"; }
+cmd_status()    { die "Not yet implemented"; }
+cmd_sync()      { die "Not yet implemented"; }
+
+main "$@"
