@@ -391,7 +391,7 @@ cmd_status() {
     # Check home directory
     if [[ -d "$SANDBOX_HOME" ]]; then
         local usage
-        usage="$(sudo du -sh "$SANDBOX_HOME" 2>/dev/null | cut -f1)"
+        usage="$(du -sh "$SANDBOX_HOME" 2>/dev/null | cut -f1)"
         echo "Home disk:     ${usage:-unknown}"
     else
         echo "Home disk:     (directory does not exist)"
@@ -405,9 +405,9 @@ cmd_status() {
     fi
 
     # Check SSH
-    if [[ -f "${SANDBOX_HOME}/.ssh/authorized_keys" ]]; then
-        local nkeys
-        nkeys="$(sudo wc -l < "${SANDBOX_HOME}/.ssh/authorized_keys")"
+    local nkeys
+    nkeys="$(sudo -u "$SANDBOX_USER" wc -l < <(sudo -u "$SANDBOX_USER" cat "${SANDBOX_HOME}/.ssh/authorized_keys" 2>/dev/null) 2>/dev/null || true)"
+    if [[ -n "$nkeys" && "$nkeys" -gt 0 ]] 2>/dev/null; then
         echo "SSH keys:      $nkeys"
     else
         echo "SSH keys:      none"
