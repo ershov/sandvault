@@ -288,9 +288,21 @@ cmd_build() {
     info "Build complete. Sandbox user: $SANDBOX_USER"
     info "NOTE: You may need to log out and back in for group membership to take effect."
 }
-cmd_shell()     { die "Not yet implemented"; }
-cmd_ssh()       { die "Not yet implemented"; }
-cmd_run()       { die "Not yet implemented"; }
+cmd_shell() {
+    require_sandbox
+    exec sudo -u "$SANDBOX_USER" -i "$@"
+}
+
+cmd_ssh() {
+    require_sandbox
+    exec ssh "$SANDBOX_USER@localhost" "$@"
+}
+
+cmd_run() {
+    [[ $# -ge 1 ]] || die "Usage: svl run <command> [args...]"
+    require_sandbox
+    exec sudo -u "$SANDBOX_USER" -- "$@"
+}
 cmd_stop()      { die "Not yet implemented"; }
 cmd_uninstall() { die "Not yet implemented"; }
 cmd_status()    { die "Not yet implemented"; }
