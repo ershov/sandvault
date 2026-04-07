@@ -271,6 +271,11 @@ cmd_install() {
         sudo usermod -aG "$SANDBOX_USER" "$HOST_USER"
     fi
 
+    # Grant sandbox user traverse (execute-only) permission on the host home
+    # so it can reach its home dir inside it — no read/list access
+    info "Granting traverse permission on $HOST_HOME"
+    sudo setfacl -m "u:${SANDBOX_USER}:x" "$HOST_HOME"
+
     # Set home directory permissions: setgid + owner/group full access
     info "Setting permissions on $SANDBOX_HOME"
     sudo chmod 2770 "$SANDBOX_HOME"
@@ -351,6 +356,9 @@ cmd_uninstall() {
 
     # Remove host user from sandbox group (may already be gone after groupdel)
     sudo gpasswd -d "$HOST_USER" "$SANDBOX_USER" 2>/dev/null || true
+
+    # Remove traverse ACL on host home
+    sudo setfacl -x "u:${SANDBOX_USER}" "$HOST_HOME" 2>/dev/null || true
 
     info "Uninstall complete"
 }
