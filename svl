@@ -211,7 +211,8 @@ build_ssh() {
     info "Setting up SSH access"
 
     sudo mkdir -p "$ssh_dir"
-    sudo chmod 700 "$ssh_dir"
+    # SSH requires strict permissions: 700 on .ssh, no setgid inherited from parent
+    sudo chmod 0700 "$ssh_dir"
 
     # Collect all public keys from host
     local pub_keys=()
@@ -229,6 +230,10 @@ build_ssh() {
     sudo cat "${pub_keys[@]}" | sudo tee "$auth_keys" > /dev/null
     sudo chmod 600 "$auth_keys"
     sudo chown -R "${SANDBOX_USER}:${SANDBOX_USER}" "$ssh_dir"
+
+    # Grant host user read access to .ssh via ACL (Unix perms stay strict for sshd)
+    sudo setfacl -R -m "u:${HOST_USER}:rX" "$ssh_dir"
+    sudo setfacl -R -d -m "u:${HOST_USER}:rX" "$ssh_dir"
 
     info "Installed ${#pub_keys[@]} public key(s) into $auth_keys"
 }
@@ -276,9 +281,12 @@ cmd_install() {
     info "Granting traverse permission on $HOST_HOME"
     sudo setfacl -m "u:${SANDBOX_USER}:x" "$HOST_HOME"
 
-    # Set home directory permissions: setgid + owner/group full access
+    # Home dir: owner rwx, group r-x — sshd StrictModes rejects group-writable homes.
+    # Host user gets full access via ACL instead.
     info "Setting permissions on $SANDBOX_HOME"
-    sudo chmod 2770 "$SANDBOX_HOME"
+    sudo chmod 0750 "$SANDBOX_HOME"
+    sudo setfacl -m "g:${SANDBOX_USER}:rwx" "$SANDBOX_HOME"
+    sudo setfacl -d -m "g:${SANDBOX_USER}:rwx" "$SANDBOX_HOME"
 
     # Install sudoers rule
     build_sudoers
