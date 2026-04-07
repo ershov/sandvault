@@ -323,7 +323,51 @@ cmd_stop() {
     fi
 }
 cmd_uninstall() { die "Not yet implemented"; }
-cmd_status()    { die "Not yet implemented"; }
+cmd_status() {
+    echo "Sandbox user:  $SANDBOX_USER"
+    echo "Sandbox home:  $SANDBOX_HOME"
+
+    # Check if user exists
+    if sandbox_user_exists; then
+        echo "User exists:   yes"
+        echo "User shell:    $(getent passwd "$SANDBOX_USER" | cut -d: -f7)"
+        echo "User uid:      $(id -u "$SANDBOX_USER")"
+        echo "User groups:   $(id -nG "$SANDBOX_USER")"
+    else
+        echo "User exists:   no"
+        return
+    fi
+
+    # Check running processes
+    local procs
+    procs="$(pgrep -u "$SANDBOX_USER" -c 2>/dev/null || true)"
+    echo "Processes:     ${procs:-0}"
+
+    # Check home directory
+    if [[ -d "$SANDBOX_HOME" ]]; then
+        local usage
+        usage="$(sudo du -sh "$SANDBOX_HOME" 2>/dev/null | cut -f1)"
+        echo "Home disk:     ${usage:-unknown}"
+    else
+        echo "Home disk:     (directory does not exist)"
+    fi
+
+    # Check sudoers
+    if [[ -f "$SUDOERS_FILE" ]]; then
+        echo "Sudoers rule:  $SUDOERS_FILE"
+    else
+        echo "Sudoers rule:  not installed"
+    fi
+
+    # Check SSH
+    if [[ -f "${SANDBOX_HOME}/.ssh/authorized_keys" ]]; then
+        local nkeys
+        nkeys="$(sudo wc -l < "${SANDBOX_HOME}/.ssh/authorized_keys")"
+        echo "SSH keys:      $nkeys"
+    else
+        echo "SSH keys:      none"
+    fi
+}
 cmd_sync()      { die "Not yet implemented"; }
 
 main "$@"
