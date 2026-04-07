@@ -99,10 +99,9 @@ build_sudoers() {
         die "Sudoers rule failed validation. Aborting."
     fi
 }
-# Files and directories to copy from host home to sandbox home.
-# Each entry is relative to $HOME. Directories must end with /.
-# Only entries that exist on the host are copied.
-readonly SYNC_DOTFILES=(
+# Individual files to copy from host home to sandbox home.
+# Each entry is relative to $HOME. Only entries that exist are copied.
+readonly SYNC_FILES=(
     # Shell
     .bashrc
     .bash_profile
@@ -120,6 +119,26 @@ readonly SYNC_DOTFILES=(
     .nanorc
     .tmux.conf
     .tmux.tcl
+    .config/starship.toml
+
+    # Dev tools
+    .gitconfig
+    .gitignore
+    .bazelrc
+    .editorconfig
+    .npmrc
+    .gemrc
+    .curlrc
+    .wgetrc
+    .ripgreprc
+    .fdignore
+    .prettierrc
+    .eslintrc.json
+)
+
+# Directories to copy in full (rsync, no excludes).
+readonly SYNC_DIRS=(
+    # Editor / TUI
     .config/nvim/
     .config/htop/
     .config/kitty/
@@ -131,33 +150,13 @@ readonly SYNC_DOTFILES=(
     .config/lazygit/
     .config/lazy-github/
     .config/gitui/
-    .config/starship.toml
 
     # Dev tools
-    .gitconfig
-    .gitignore
-    .bazelrc
-    .editorconfig
     .config/git/
     .config/gh/
     .config/uv/
     .config/opencode/
     .config/pip/
-    .npmrc
-    .gemrc
-    .curlrc
-    .wgetrc
-    .ripgreprc
-    .fdignore
-    .prettierrc
-    .eslintrc.json
-
-    # Agent credentials
-    .claude/.credentials.json
-    .claude/settings.json
-    .claude/plugins/
-    .codex/auth.json
-    .codex/config.toml
 
     # Binaries / runtimes
     .local/bin/
@@ -166,33 +165,56 @@ readonly SYNC_DOTFILES=(
     bin/
 )
 
+# Agent directories — copied with excludes to skip transient data.
+# Format: "dir|exclude1|exclude2|..."
+readonly SYNC_AGENT_DIRS=(
+    ".claude|sessions|history.jsonl|backups|cache|debug|downloads|file-history|paste-cache|session-env|shell-snapshots|tasks|telemetry|todos|transcripts|ide"
+    ".codex|sessions|history.jsonl|log|shell_snapshots|tmp|models_cache.json"
+)
+
 sync_dotfiles() {
     info "Syncing dotfiles from $HOST_HOME to $SANDBOX_HOME"
 
-    for entry in "${SYNC_DOTFILES[@]}"; do
+    # Copy individual files
+    for entry in "${SYNC_FILES[@]}"; do
         local src="${HOST_HOME}/${entry}"
-        local dest="${SANDBOX_HOME}/${entry}"
-
-        # Skip if source doesn't exist
         [[ -e "$src" ]] || continue
-
-        # Ensure parent directory exists
         local dest_dir
-        dest_dir="$(dirname "$dest")"
+        dest_dir="$(dirname "${SANDBOX_HOME}/${entry}")"
         sudo mkdir -p "$dest_dir"
-
-        if [[ -d "$src" ]]; then
-            # Directory: rsync with trailing slash to copy contents
-            # Ensure source has trailing slash for rsync
-            [[ "$src" == */ ]] || src="${src}/"
-            [[ "$dest" == */ ]] || dest="${dest}/"
-            sudo rsync -a --quiet "$src" "$dest"
-        else
-            # File: copy
-            sudo cp -a "$src" "$dest"
-        fi
+        sudo cp -a "$src" "${SANDBOX_HOME}/${entry}"
         info "  Copied: $entry"
     done
+
+    # Copy full directories
+    for entry in "${SYNC_DIRS[@]}"; do
+        local src="${HOST_HOME}/${entry}"
+        [[ -d "$src" ]] || continue
+        local dest="${SANDBOX_HOME}/${entry}"
+        sudo mkdir -p "$dest"
+        [[ "$src" == */ ]] || src="${src}/"
+        [[ "$dest" == */ ]] || dest="${dest}/"
+        sudo rsync -a --quiet "$src" "$dest"
+        info "  Copied: $entry"
+    done
+
+    # Copy agent directories with excludes
+    for spec in "${SYNC_AGENT_DIRS[@]}"; do
+        IFS='|' read -r dir excludes_str <<< "$spec"
+        local src="${HOST_HOME}/${dir}"
+        [[ -d "$src" ]] || continue
+        local dest="${SANDBOX_HOME}/${dir}/"
+        sudo mkdir -p "$dest"
+
+        local rsync_args=(-a --quiet)
+        IFS='|' read -ra excludes <<< "$excludes_str"
+        for excl in "${excludes[@]}"; do
+            rsync_args+=(--exclude="$excl")
+        done
+        sudo rsync "${rsync_args[@]}" "${src}/" "$dest"
+        info "  Copied: $dir/ (with excludes)"
+    done
+
     sudo mkdir -p "$SANDBOX_HOME/src"
 
     # Inject sandbox-specific settings into .bashrc if not already present
