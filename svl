@@ -69,7 +69,29 @@ main() {
 }
 
 # Stub functions — implemented in subsequent tasks
-build_sudoers() { info "Sudoers setup (not yet implemented)"; }
+build_sudoers() {
+    if [[ -f "$SUDOERS_FILE" ]]; then
+        info "Sudoers rule already exists at $SUDOERS_FILE"
+        return
+    fi
+
+    info "Installing sudoers rule at $SUDOERS_FILE"
+    local rule="${HOST_USER} ALL=(${SANDBOX_USER}) NOPASSWD: ALL"
+
+    # Write via tee to a temp file, validate, then move into place
+    local tmp
+    tmp="$(mktemp)"
+    echo "$rule" > "$tmp"
+    # visudo -c -f validates the syntax of the file
+    if sudo visudo -c -f "$tmp" >/dev/null 2>&1; then
+        sudo cp "$tmp" "$SUDOERS_FILE"
+        sudo chmod 0440 "$SUDOERS_FILE"
+        rm -f "$tmp"
+    else
+        rm -f "$tmp"
+        die "Sudoers rule failed validation. Aborting."
+    fi
+}
 sync_dotfiles() { info "Dotfile sync (not yet implemented)"; }
 build_ssh()     { info "SSH setup (not yet implemented)"; }
 
