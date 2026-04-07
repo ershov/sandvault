@@ -25,14 +25,14 @@ die()   { echo >&2 "[svl] ERROR: $*"; exit 1; }
 
 sandbox_user_exists()  { getent passwd "$SANDBOX_USER" >/dev/null 2>&1; }
 sandbox_group_exists() { getent group  "$SANDBOX_USER" >/dev/null 2>&1; }
-require_sandbox() { sandbox_user_exists || die "Sandbox user '$SANDBOX_USER' does not exist. Run 'svl build' first."; }
+require_sandbox() { sandbox_user_exists || die "Sandbox user '$SANDBOX_USER' does not exist. Run 'svl install' first."; }
 
 show_help() {
     cat <<EOF
 Usage: svl <command> [args...]
 
 Commands:
-  build       Create sandbox user, group, sudoers, home skeleton, SSH keys
+  install     Create sandbox user, group, sudoers, home skeleton, SSH keys
   shell       Open login shell as sandbox user (extra args forwarded to sudo)
   ssh         SSH into sandbox user on localhost (extra args forwarded to ssh)
   run         Run a command as the sandbox user: svl run <cmd> [args...]
@@ -59,7 +59,7 @@ main() {
     shift
 
     case "$cmd" in
-        build)      cmd_build "$@" ;;
+        install)    cmd_install "$@" ;;
         shell)      cmd_shell "$@" ;;
         ssh)        cmd_ssh "$@" ;;
         run)        cmd_run "$@" ;;
@@ -233,7 +233,7 @@ build_ssh() {
     info "Installed ${#pub_keys[@]} public key(s) into $auth_keys"
 }
 
-cmd_build() {
+cmd_install() {
     [[ "$(id -u)" -ne 0 ]] || die "Do not run as root. Run as your normal user (sudo is used internally)."
 
     info "Building sandbox: $SANDBOX_USER"
