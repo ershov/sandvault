@@ -368,6 +368,14 @@ cmd_status() {
         echo "SSH keys:      none"
     fi
 }
-cmd_sync()      { die "Not yet implemented"; }
+cmd_sync() {
+    require_sandbox
+    info "Syncing dotfiles and credentials to $SANDBOX_HOME"
+    sync_dotfiles
+    build_ssh
+    info "Fixing ownership"
+    sudo chown -R "${SANDBOX_USER}:${SANDBOX_USER}" "$SANDBOX_HOME"
+    info "Sync complete"
+}
 
 main "$@"
