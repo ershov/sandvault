@@ -69,7 +69,66 @@ main() {
 }
 
 # Stub functions — implemented in subsequent tasks
-cmd_build()     { die "Not yet implemented"; }
+build_sudoers() { info "Sudoers setup (not yet implemented)"; }
+sync_dotfiles() { info "Dotfile sync (not yet implemented)"; }
+build_ssh()     { info "SSH setup (not yet implemented)"; }
+
+cmd_build() {
+    [[ "$(id -u)" -ne 0 ]] || die "Do not run as root. Run as your normal user (sudo is used internally)."
+
+    info "Building sandbox: $SANDBOX_USER"
+
+    # Create group
+    if sandbox_group_exists; then
+        info "Group '$SANDBOX_USER' already exists"
+    else
+        info "Creating group '$SANDBOX_USER'"
+        sudo groupadd "$SANDBOX_USER"
+    fi
+
+    # Create user
+    if sandbox_user_exists; then
+        info "User '$SANDBOX_USER' already exists"
+    else
+        info "Creating user '$SANDBOX_USER'"
+        sudo useradd \
+            --create-home \
+            --gid "$SANDBOX_USER" \
+            --shell "$HOST_SHELL" \
+            --home-dir "$SANDBOX_HOME" \
+            "$SANDBOX_USER"
+        # Lock password — disables password login, SSH key-only
+        sudo usermod -L "$SANDBOX_USER"
+    fi
+
+    # Add host user to sandbox group (for file access)
+    if id -nG "$HOST_USER" | grep -qw "$SANDBOX_USER"; then
+        info "Host user '$HOST_USER' already in group '$SANDBOX_USER'"
+    else
+        info "Adding '$HOST_USER' to group '$SANDBOX_USER'"
+        sudo usermod -aG "$SANDBOX_USER" "$HOST_USER"
+    fi
+
+    # Set home directory permissions: setgid + owner/group full access
+    info "Setting permissions on $SANDBOX_HOME"
+    sudo chmod 2770 "$SANDBOX_HOME"
+
+    # Install sudoers rule
+    build_sudoers
+
+    # Copy dotfiles and tools
+    sync_dotfiles
+
+    # Set up SSH access
+    build_ssh
+
+    # Fix ownership
+    info "Fixing ownership"
+    sudo chown -R "${SANDBOX_USER}:${SANDBOX_USER}" "$SANDBOX_HOME"
+
+    info "Build complete. Sandbox user: $SANDBOX_USER"
+    info "NOTE: You may need to log out and back in for group membership to take effect."
+}
 cmd_shell()     { die "Not yet implemented"; }
 cmd_ssh()       { die "Not yet implemented"; }
 cmd_run()       { die "Not yet implemented"; }
