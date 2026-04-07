@@ -10,9 +10,13 @@ HOST_USER="${SUDO_USER:-$USER}"
 [[ -n "$HOST_USER" ]] || { echo >&2 "[svl] ERROR: Cannot determine host user (USER and SUDO_USER are both unset)"; exit 1; }
 readonly HOST_USER
 readonly SANDBOX_USER="sandvault-${HOST_USER}"
-readonly SANDBOX_HOME="/home/${SANDBOX_USER}"
+HOST_HOME="$(getent passwd "$HOST_USER" | cut -d: -f6)"
+readonly HOST_HOME
+readonly SANDBOX_HOME="${HOST_HOME}/sandvault"
 readonly SUDOERS_FILE="/etc/sudoers.d/50-${SANDBOX_USER}"
 HOST_SHELL="$(getent passwd "$HOST_USER" | cut -d: -f7)"
+# useradd needs a home outside /home/<user> — we must create it ourselves
+# since useradd --create-home won't create inside another user's home
 readonly HOST_SHELL
 
 info()  { echo >&2 "[svl] $*"; }
@@ -161,12 +165,10 @@ readonly SYNC_DOTFILES=(
 )
 
 sync_dotfiles() {
-    local host_home
-    host_home="$(getent passwd "$HOST_USER" | cut -d: -f6)"
-    info "Syncing dotfiles from $host_home to $SANDBOX_HOME"
+    info "Syncing dotfiles from $HOST_HOME to $SANDBOX_HOME"
 
     for entry in "${SYNC_DOTFILES[@]}"; do
-        local src="${host_home}/${entry}"
+        local src="${HOST_HOME}/${entry}"
         local dest="${SANDBOX_HOME}/${entry}"
 
         # Skip if source doesn't exist
@@ -203,8 +205,6 @@ sync_dotfiles() {
     fi
 }
 build_ssh() {
-    local host_home
-    host_home="$(getent passwd "$HOST_USER" | cut -d: -f6)"
     local ssh_dir="${SANDBOX_HOME}/.ssh"
     local auth_keys="${ssh_dir}/authorized_keys"
 
@@ -215,13 +215,13 @@ build_ssh() {
 
     # Collect all public keys from host
     local pub_keys=()
-    for f in "${host_home}"/.ssh/*.pub; do
+    for f in "${HOST_HOME}"/.ssh/*.pub; do
         [[ -f "$f" ]] || continue
         pub_keys+=("$f")
     done
 
     if [[ ${#pub_keys[@]} -eq 0 ]]; then
-        warn "No SSH public keys found in ${host_home}/.ssh/*.pub — skipping SSH setup"
+        warn "No SSH public keys found in ${HOST_HOME}/.ssh/*.pub — skipping SSH setup"
         return
     fi
 
@@ -250,9 +250,11 @@ cmd_build() {
     if sandbox_user_exists; then
         info "User '$SANDBOX_USER' already exists"
     else
-        info "Creating user '$SANDBOX_USER'"
+        info "Creating user '$SANDBOX_USER' (home: $SANDBOX_HOME)"
+        # Create home dir ourselves since it's inside the host user's home
+        sudo mkdir -p "$SANDBOX_HOME"
         sudo useradd \
-            --create-home \
+            --no-create-home \
             --gid "$SANDBOX_USER" \
             --shell "$HOST_SHELL" \
             --home-dir "$SANDBOX_HOME" \

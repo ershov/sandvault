@@ -21,7 +21,7 @@ has no membership in privileged groups.
 
 - **Group** `sandvault-$USER` — shared group for file access between host and sandbox.
 - **User** `sandvault-$USER` with:
-  - Home directory at `/home/sandvault-$USER`
+  - Home directory at `/home/$USER/sandvault` (inside the host user's home)
   - Login shell matching the host user's shell (e.g., `/bin/bash`)
   - Primary group: `sandvault-$USER`
   - Password locked (`usermod -L`) — no password login possible
