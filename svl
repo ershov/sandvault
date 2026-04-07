@@ -1,5 +1,7 @@
 #!/bin/bash
+# Linux sandbox user management tool
 set -Eeuo pipefail
+trap 'echo >&2 "${BASH_SOURCE[0]}: line $LINENO: $BASH_COMMAND: exit $?"' ERR
 
 readonly SVL_VERSION="0.1.0"
 
