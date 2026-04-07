@@ -92,7 +92,115 @@ build_sudoers() {
         die "Sudoers rule failed validation. Aborting."
     fi
 }
-sync_dotfiles() { info "Dotfile sync (not yet implemented)"; }
+# Files and directories to copy from host home to sandbox home.
+# Each entry is relative to $HOME. Directories must end with /.
+# Only entries that exist on the host are copied.
+SYNC_DOTFILES=(
+    # Shell
+    .bashrc
+    .bash_profile
+    .profile
+    .zshrc
+    .zshenv
+    .zprofile
+    .zlogin
+    .inputrc
+    .screenrc
+    .hushlogin
+
+    # Editor / TUI
+    .vimrc
+    .nanorc
+    .tmux.conf
+    .tmux.tcl
+    .config/nvim/
+    .config/htop/
+    .config/kitty/
+    .config/alacritty/
+    .config/wezterm/
+    .config/nnn/
+    .config/vifm/
+    .config/sc-im/
+    .config/lazygit/
+    .config/lazy-github/
+    .config/gitui/
+    .config/starship.toml
+
+    # Dev tools
+    .gitconfig
+    .gitignore
+    .bazelrc
+    .editorconfig
+    .config/git/
+    .config/gh/
+    .config/uv/
+    .config/opencode/
+    .config/pip/
+    .npmrc
+    .gemrc
+    .curlrc
+    .wgetrc
+    .ripgreprc
+    .fdignore
+    .prettierrc
+    .eslintrc.json
+
+    # Agent credentials
+    .claude/.credentials.json
+    .claude/settings.json
+    .claude/plugins/
+    .codex/auth.json
+    .codex/config.toml
+
+    # Binaries / runtimes
+    .local/bin/
+    .bun/
+    .cargo/
+    bin/
+)
+
+sync_dotfiles() {
+    local host_home
+    host_home="$(getent passwd "$HOST_USER" | cut -d: -f6)"
+    info "Syncing dotfiles from $host_home to $SANDBOX_HOME"
+
+    for entry in "${SYNC_DOTFILES[@]}"; do
+        local src="${host_home}/${entry}"
+        local dest="${SANDBOX_HOME}/${entry}"
+
+        # Skip if source doesn't exist
+        [[ -e "$src" ]] || continue
+
+        # Ensure parent directory exists
+        local dest_dir
+        dest_dir="$(dirname "$dest")"
+        sudo mkdir -p "$dest_dir"
+
+        if [[ -d "$src" ]]; then
+            # Directory: rsync with trailing slash to copy contents
+            # Ensure source has trailing slash for rsync
+            [[ "$src" == */ ]] || src="${src}/"
+            [[ "$dest" == */ ]] || dest="${dest}/"
+            sudo rsync -a --quiet "$src" "$dest"
+        else
+            # File: copy
+            sudo cp -a "$src" "$dest"
+        fi
+        info "  Copied: $entry"
+    done
+
+    # Inject umask 002 at the top of sandbox .bashrc if not already present
+    local sandbox_bashrc="${SANDBOX_HOME}/.bashrc"
+    if [[ -f "$sandbox_bashrc" ]]; then
+        if ! sudo grep -q '^umask 002' "$sandbox_bashrc"; then
+            info "Injecting umask 002 into $sandbox_bashrc"
+            sudo sed -i '1i umask 002' "$sandbox_bashrc"
+        fi
+    else
+        info "Creating $sandbox_bashrc with umask 002"
+        echo "umask 002" | sudo tee "$sandbox_bashrc" >/dev/null
+    fi
+}
 build_ssh()     { info "SSH setup (not yet implemented)"; }
 
 cmd_build() {
