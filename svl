@@ -276,9 +276,10 @@ cmd_install() {
     info "Granting traverse permission on $HOST_HOME"
     sudo setfacl -m "u:${SANDBOX_USER}:x" "$HOST_HOME"
 
-    # Set home directory permissions: setgid + owner/group full access
+    # Home dir: 0750 so sshd StrictModes is happy (no group-write on home root).
+    # Subdirectories get setgid+group-write for shared access.
     info "Setting permissions on $SANDBOX_HOME"
-    sudo chmod 2770 "$SANDBOX_HOME"
+    sudo chmod 0750 "$SANDBOX_HOME"
 
     # Install sudoers rule
     build_sudoers
@@ -292,6 +293,11 @@ cmd_install() {
     # Fix ownership
     info "Fixing ownership"
     sudo chown -R "${SANDBOX_USER}:${SANDBOX_USER}" "$SANDBOX_HOME"
+
+    # Make all subdirs group-writable + setgid so host can write inside them.
+    # Home root stays 0750 for sshd StrictModes; .ssh stays 0700.
+    sudo find "$SANDBOX_HOME" -mindepth 1 -type d ! -path '*/.ssh' ! -path '*/.ssh/*' \
+        -exec chmod 2770 {} +
 
     info "Build complete. Sandbox user: $SANDBOX_USER"
     info "NOTE: You may need to log out and back in for group membership to take effect."
