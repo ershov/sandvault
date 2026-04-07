@@ -322,7 +322,35 @@ cmd_stop() {
         info "No processes running"
     fi
 }
-cmd_uninstall() { die "Not yet implemented"; }
+cmd_uninstall() {
+    require_sandbox
+
+    echo "This will permanently remove:"
+    echo "  - User: $SANDBOX_USER"
+    echo "  - Home: $SANDBOX_HOME"
+    echo "  - Group: $SANDBOX_USER"
+    echo "  - Sudoers: $SUDOERS_FILE"
+    echo ""
+    read -r -p "Are you sure? [y/N] " confirm
+    [[ "$confirm" =~ ^[Yy]$ ]] || { info "Aborted."; return; }
+
+    info "Stopping processes..."
+    cmd_stop
+
+    info "Removing sudoers rule"
+    sudo rm -f "$SUDOERS_FILE"
+
+    info "Removing user and home directory"
+    sudo userdel -r "$SANDBOX_USER" 2>/dev/null || warn "userdel failed (user may already be removed)"
+
+    info "Removing group"
+    sudo groupdel "$SANDBOX_USER" 2>/dev/null || warn "groupdel failed (group may already be removed)"
+
+    # Remove host user from sandbox group (may already be gone after groupdel)
+    sudo gpasswd -d "$HOST_USER" "$SANDBOX_USER" 2>/dev/null || true
+
+    info "Uninstall complete"
+}
 cmd_status() {
     echo "Sandbox user:  $SANDBOX_USER"
     echo "Sandbox home:  $SANDBOX_HOME"
