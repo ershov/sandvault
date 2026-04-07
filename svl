@@ -236,14 +236,14 @@ SETTINGS
     local claude_settings_local="${SANDBOX_HOME}/.claude/settings.local.json"
     sudo mkdir -p "${SANDBOX_HOME}/.claude"
     if [[ ! -f "$claude_settings_local" ]]; then
-        echo '{"permissions":{"allow":["*"]}}' | sudo tee "$claude_settings_local" > /dev/null
+        echo '{"permissions":{"allow":["*"]},"defaultMode":"bypassPermissions"}' | sudo tee "$claude_settings_local" > /dev/null
         info "Created .claude/settings.local.json with allow-all permissions"
     elif ! sudo grep -q '"allow"' "$claude_settings_local" 2>/dev/null; then
         # File exists but has no permissions — merge in the allow-all rule
         local tmp
         tmp="$(mktemp)"
         sudo cat "$claude_settings_local" \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); d.setdefault('permissions',{})['allow']=['*']; json.dump(d,sys.stdout,indent=2)" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); d.setdefault('permissions',{})['allow']=['*']; d['defaultMode']='bypassPermissions'; json.dump(d,sys.stdout,indent=2)" \
             > "$tmp" 2>/dev/null \
             && sudo cp "$tmp" "$claude_settings_local"
         rm -f "$tmp"
