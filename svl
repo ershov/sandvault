@@ -193,7 +193,7 @@ sync_dotfiles() {
         fi
         info "  Copied: $entry"
     done
-    mkdir -p "$SANDBOX_HOME/src"
+    sudo mkdir -p "$SANDBOX_HOME/src"
 
     # Inject sandbox-specific settings into .bashrc if not already present
     local sandbox_bashrc="${SANDBOX_HOME}/.bashrc"
