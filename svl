@@ -192,16 +192,19 @@ sync_dotfiles() {
         info "  Copied: $entry"
     done
 
-    # Inject umask 002 at the top of sandbox .bashrc if not already present
+    # Inject sandbox-specific settings into .bashrc if not already present
     local sandbox_bashrc="${SANDBOX_HOME}/.bashrc"
-    if [[ -f "$sandbox_bashrc" ]]; then
-        if ! sudo grep -q '^umask 002' "$sandbox_bashrc"; then
-            info "Injecting umask 002 into $sandbox_bashrc"
-            sudo sed -i '1i umask 002' "$sandbox_bashrc"
-        fi
-    else
-        info "Creating $sandbox_bashrc with umask 002"
-        echo "umask 002" | sudo tee "$sandbox_bashrc" >/dev/null
+    local marker="# svl-sandbox-settings"
+    if ! sudo grep -q "$marker" "$sandbox_bashrc" 2>/dev/null; then
+        info "Injecting sandbox settings into $sandbox_bashrc"
+        cat <<'SETTINGS' | sudo tee -a "$sandbox_bashrc" >/dev/null
+
+# svl-sandbox-settings
+umask 002
+alias claude="command claude --dangerously-skip-permissions"
+alias codex="command codex --dangerously-bypass-approvals-and-sandbox"
+alias gemini="command gemini --yolo"
+SETTINGS
     fi
 }
 build_ssh() {
