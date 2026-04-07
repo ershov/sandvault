@@ -3,6 +3,8 @@
 set -Eeuo pipefail
 trap 'echo >&2 "${BASH_SOURCE[0]}: line $LINENO: $BASH_COMMAND: exit $?"' ERR
 
+[[ "$(uname -s)" == "Linux" ]] || { echo >&2 "[svl] ERROR: svl is for Linux. Use svm on macOS."; exit 1; }
+
 readonly SVL_VERSION="0.1.0"
 
 # Resolve the invoking (host) user — works even under sudo
